@@ -34,6 +34,12 @@ static uint32_t s_last_ntp_attempt_ms = 0;
 static volatile bool s_connected = false;
 static volatile int  s_rssi      = 0;
 
+// Set by WiFiManager's save callback when the user just submitted new creds
+// via the portal (as opposed to autoConnect succeeding from saved creds).
+// We use this to trigger a clean reboot after first-time provisioning — see
+// the comment on the check inside net_begin().
+static volatile bool s_just_provisioned = false;
+
 static const uint32_t NTP_RESYNC_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL;
 static const uint32_t NTP_RETRY_INTERVAL_MS  =  5UL * 60UL * 1000UL;
 
@@ -126,12 +132,29 @@ void net_begin() {
   // Don't auto-close the portal on first failed connect attempt — give the
   // user a chance to fix a typo without rebooting.
   wm.setBreakAfterConfig(true);
+  // Save-config callback fires from the portal's form-submission handler,
+  // i.e. only on a fresh provisioning. Saved-creds boots skip it.
+  wm.setSaveConfigCallback([]() {
+    s_just_provisioned = true;
+    Serial.println("[net] WiFiManager: new credentials saved");
+  });
 
   String ap = build_ap_name();
   Serial.printf("[net] WiFiManager: trying saved creds, AP fallback '%s'\n", ap.c_str());
 
   if (!wm.autoConnect(ap.c_str())) {
     Serial.println("[net] WiFiManager: portal timed out / connect failed; rebooting to retry");
+    delay(500);
+    ESP.restart();
+  }
+
+  // Fresh-provisioning reboot. WiFiManager bound a sync WebServer to port 80
+  // for the portal; lwIP can leave that PCB lingering long enough that our
+  // AsyncWebServer.begin() silently fails to bind the same port on the same
+  // boot. Saved-creds boots skip the portal entirely, so we only need to
+  // reboot when the save-config callback fired.
+  if (s_just_provisioned) {
+    Serial.println("[net] provisioned — rebooting once so AsyncWebServer can claim port 80 cleanly");
     delay(500);
     ESP.restart();
   }

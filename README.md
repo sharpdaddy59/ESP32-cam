@@ -79,8 +79,10 @@ Connect with your phone — most devices launch a captive-portal browser;
 if not, visit `http://192.168.4.1`. Pick your home Wi-Fi, enter the
 password, submit. The board persists credentials to NVS and connects.
 
-**Press RESET on the board after first provisioning.** See "Gotchas"
-below. Subsequent boots skip the portal entirely.
+The firmware **auto-reboots once** after a fresh provisioning to dodge
+a port-80 handoff race with WiFiManager — see "Gotchas" below. After
+that one reboot the board joins your network normally; subsequent
+boots skip the portal entirely.
 
 Then open `http://esp32cam-XXXX.local/` (or the IP from the serial log).
 
@@ -98,12 +100,13 @@ Documented in the code, but worth surfacing here:
 - **Serial monitor needs `dtr=off,rts=off`** or RTS holds the chip in
   reset and you see no output. `build.ps1 -Monitor` and `-MonitorOnly`
   set this automatically.
-- **First-boot port 80 conflict.** WiFiManager runs its own web server
-  on port 80 while the portal is open. When it exits and our
-  AsyncWebServer tries to bind the same port, the handoff isn't always
-  clean and our HTTP server may silently fail to listen. Pressing RESET
-  after successful provisioning works around this; subsequent boots are
-  fine because they skip the portal.
+- **First-provisioning reboot.** WiFiManager runs its own sync web
+  server on port 80 during the captive portal; when it exits, lwIP can
+  leave that socket lingering long enough that our AsyncWebServer
+  silently fails to bind the same port on the same boot. After the
+  portal flow saves new creds the firmware auto-reboots once so the
+  next boot can claim port 80 cleanly — that's expected, not a fault.
+  Saved-creds boots skip the portal and don't trigger the reboot.
 - **Snapshots compete with the live stream for Wi-Fi bandwidth.** Both
   share one radio link. For fast snapshots, close the home page first or
   drop the stream resolution to SVGA in the camera settings.
@@ -114,9 +117,9 @@ Documented in the code, but worth surfacing here:
 
 ## Roadmap
 
-- Fix the port-80 handoff so first-boot provisioning doesn't need a
-  manual reset.
 - Stream rate-limit / framerate selector in the UI.
 - Snapshot endpoint variant with quality decoupled from the live stream.
 - Motion detection via a PSRAM-resident pre-trigger ring buffer.
 - mDNS service-browsing page to discover other cameras on the LAN.
+- `build.ps1 -Network` auto-pick the discovered network port so you
+  don't have to pass the IP explicitly.
