@@ -1,0 +1,6 @@
+# arduino-cli build artifacts
+build/
+
+# OpenSCAD swap / lock files
+*.scad.bak
+*.scad~

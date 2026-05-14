@@ -1,4 +1,9 @@
-// camera.cpp — esp_camera wrapper + flash-LED PWM.
+// camera.cpp — esp_camera wrapper + flash-LED PWM for the V2 (classic ESP32) board.
+//
+// Pin map is the AI-Thinker ESP32-CAM standard (matched 1:1 by the nulllab
+// V2 PCB). The esp_camera library auto-detects the sensor at init time — the
+// same code path serves OV2640 and OV3660 boards transparently. Don't rely
+// on which one your unit shipped with.
 
 #include <Arduino.h>
 #include <esp_camera.h>
@@ -6,14 +11,33 @@
 #include "camera.h"
 #include "config.h"
 
+// AI-Thinker pin constants — duplicated locally so we don't depend on the
+// esp32-camera examples folder being on the include path.
+#define CAM_PIN_PWDN     32
+#define CAM_PIN_RESET    -1
+#define CAM_PIN_XCLK      0
+#define CAM_PIN_SIOD     26
+#define CAM_PIN_SIOC     27
+#define CAM_PIN_D7       35
+#define CAM_PIN_D6       34
+#define CAM_PIN_D5       39
+#define CAM_PIN_D4       36
+#define CAM_PIN_D3       21
+#define CAM_PIN_D2       19
+#define CAM_PIN_D1       18
+#define CAM_PIN_D0        5
+#define CAM_PIN_VSYNC    25
+#define CAM_PIN_HREF     23
+#define CAM_PIN_PCLK     22
+
 static bool s_running = false;
 
 bool camera_start() {
   if (s_running) return true;
 
   camera_config_t cfg = {};
-  cfg.ledc_channel = LEDC_CHANNEL_1;     // channel 0 is reserved for flash LED
-  cfg.ledc_timer   = LEDC_TIMER_1;
+  cfg.ledc_channel = LEDC_CHANNEL_0;   // XCLK PWM — kept clear of FLASH_LED_CHANNEL
+  cfg.ledc_timer   = LEDC_TIMER_0;
   cfg.pin_d0       = CAM_PIN_D0;
   cfg.pin_d1       = CAM_PIN_D1;
   cfg.pin_d2       = CAM_PIN_D2;
@@ -32,18 +56,25 @@ bool camera_start() {
   cfg.pin_reset    = CAM_PIN_RESET;
   cfg.xclk_freq_hz = 20000000;
   cfg.pixel_format = PIXFORMAT_JPEG;
-  cfg.frame_size   = FRAMESIZE_UXGA;
-  cfg.jpeg_quality = 10;
-  cfg.fb_count     = 2;        // double-buffer for smoother streaming
-  cfg.fb_location  = CAMERA_FB_IN_PSRAM;
-  cfg.grab_mode    = CAMERA_GRAB_LATEST;
+  cfg.frame_size   = FRAMESIZE_SVGA;
+  cfg.jpeg_quality = 12;
+  cfg.fb_count     = 1;
+  cfg.fb_location  = CAMERA_FB_IN_DRAM;
+  cfg.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
 
-  if (!psramFound()) {
-    Serial.println("[cam] WARN: PSRAM not found; falling back to SVGA single-buffer");
-    cfg.frame_size  = FRAMESIZE_SVGA;
-    cfg.fb_count    = 1;
-    cfg.fb_location = CAMERA_FB_IN_DRAM;
-    cfg.jpeg_quality = 12;
+  if (psramFound()) {
+    // V2 has 2 MB quad PSRAM. fb_count=3 gives the stream and a concurrent
+    // snapshot enough buffers that the camera driver always has at least
+    // one to fill. With 2 buffers the snapshot path could hold one while
+    // the stream held the other, starving the camera and stalling both.
+    // 3 x ~250KB worst-case UXGA JPEG ≈ 750KB, well within 2MB.
+    cfg.frame_size   = FRAMESIZE_UXGA;
+    cfg.jpeg_quality = 10;
+    cfg.fb_count     = 3;
+    cfg.fb_location  = CAMERA_FB_IN_PSRAM;
+    cfg.grab_mode    = CAMERA_GRAB_LATEST;
+  } else {
+    Serial.println("[cam] WARN: PSRAM not found; staying at SVGA, single-buffer");
   }
 
   esp_err_t err = esp_camera_init(&cfg);
@@ -52,9 +83,10 @@ bool camera_start() {
     return false;
   }
 
-  // Conservative sensor defaults — most users want a "looks normal" image.
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
+    Serial.printf("[cam] sensor PID=0x%02x (OV2640=0x26, OV3660=0x36)\n",
+                  s->id.PID);
     s->set_brightness(s, 0);
     s->set_contrast(s, 0);
     s->set_saturation(s, 0);
@@ -77,6 +109,13 @@ bool camera_start() {
     s->set_vflip(s, 0);
     s->set_dcw(s, 1);
     s->set_colorbar(s, 0);
+
+    // OV3660 quirks: starting brightness is a bit dim, vflip needed for the
+    // typical orientation when the lens is folded over the module.
+    if (s->id.PID == 0x36 /*OV3660_PID*/) {
+      s->set_brightness(s, 1);
+      s->set_saturation(s, -2);
+    }
   }
 
   s_running = true;
@@ -136,15 +175,18 @@ CameraSettings camera_get_settings() {
 static uint8_t s_flash_duty = 0;
 
 void flash_led_init() {
-  ledcSetup(FLASH_LED_CHANNEL, FLASH_LED_FREQ, FLASH_LED_RES_BITS);
-  ledcAttachPin(FLASH_LED_PIN, FLASH_LED_CHANNEL);
-  ledcWrite(FLASH_LED_CHANNEL, 0);
+  // esp32 core 3.x: ledcAttachChannel binds pin → channel + config in one call,
+  // and ledcWrite() now takes the PIN, not the channel. We still pin the
+  // channel explicitly (rather than using the auto-allocating ledcAttach())
+  // so we don't race the camera's XCLK on channel 0.
+  ledcAttachChannel(FLASH_LED_PIN, FLASH_LED_FREQ, FLASH_LED_RES_BITS, FLASH_LED_CHANNEL);
+  ledcWrite(FLASH_LED_PIN, 0);
   s_flash_duty = 0;
 }
 
 void flash_led_set(uint8_t duty) {
   s_flash_duty = duty;
-  ledcWrite(FLASH_LED_CHANNEL, duty);
+  ledcWrite(FLASH_LED_PIN, duty);
 }
 
 uint8_t flash_led_get() { return s_flash_duty; }

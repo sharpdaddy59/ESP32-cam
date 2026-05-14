@@ -20,7 +20,6 @@
 #include "sd.h"
 #include "device_name.h"
 #include "net.h"
-#include "usb_msc.h"
 #include "ota.h"
 
 static AsyncWebServer server(HTTP_PORT);
@@ -62,7 +61,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   code { background:var(--bg); padding:1px 4px; border-radius:3px; }
 </style></head><body>
 <h1>ESP32-S3-CAM</h1>
-<p><span class="pill" id="hostnamePill">…</span><span class="pill" id="mscPill">…</span><span class="pill" id="wifiPill">…</span></p>
+<p><span class="pill" id="hostnamePill">…</span><span class="pill" id="sdPill">…</span><span class="pill" id="wifiPill">…</span></p>
 <img class="stream" id="stream" src="/stream" alt="live stream">
 <div class="row">
   <button id="snap">Snapshot</button>
@@ -206,14 +205,15 @@ async function loadStatus() {
     ['Hostname', j.hostname],
     ['SD total', (j.sd_total/(1024*1024)).toFixed(0) + ' MB'],
     ['SD free',  (j.sd_free /(1024*1024)).toFixed(0) + ' MB'],
-    ['MSC active', j.msc_active ? 'yes' : 'no'],
+    ['SD mounted', j.sd_mounted ? 'yes' : 'no'],
     ['Camera', j.camera_running ? 'running' : 'stopped'],
+    ['CPU temp', (j.cpu_temp_c != null ? j.cpu_temp_c.toFixed(1) : '—') + ' °C'],
   ];
   $('#statusTable').innerHTML = rows.map(r =>
     `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
   $('#hostnamePill').textContent = j.hostname + '.local';
-  $('#mscPill').textContent = j.msc_active ? 'USB mode' : 'standalone';
-  $('#mscPill').className = 'pill ' + (j.msc_active ? 'warn' : 'ok');
+  $('#sdPill').textContent = j.sd_mounted ? `SD ${Math.round(j.sd_free/1024)}MB free` : 'no SD';
+  $('#sdPill').className = 'pill ' + (j.sd_mounted ? 'ok' : 'warn');
   $('#wifiPill').textContent = j.ssid ? `${j.ssid} ${j.rssi}dBm` : 'no wifi';
   $('#wifiPill').className = 'pill ' + (j.ssid ? 'ok' : 'err');
   $('#hostname').textContent = j.hostname;
@@ -331,33 +331,42 @@ static void on_stream(AsyncWebServerRequest *request) {
 }
 
 // ---------------------------------------------------------------------------
-// /snapshot — single JPEG. Holds the previous fb until the next request to
-// avoid a use-after-free racing AsyncWebServer's response send.
+// /snapshot — single JPEG.
+//
+// Copies the JPEG bytes into a PSRAM heap buffer and releases the camera fb
+// immediately, so the live stream and the camera driver never compete with
+// us for buffers. The heap copy is freed via onDisconnect (forced prompt by
+// Connection: close).
 // ---------------------------------------------------------------------------
-static camera_fb_t *s_last_snap_fb = nullptr;
-
 static void on_snapshot(AsyncWebServerRequest *request) {
-  if (s_last_snap_fb) {
-    esp_camera_fb_return(s_last_snap_fb);
-    s_last_snap_fb = nullptr;
-  }
-
   camera_fb_t *fb = camera_grab();
   if (!fb) {
     request->send(500, "text/plain", "camera grab failed");
     return;
   }
 
-  if (!msc_active() && sd_mounted()) {
+  if (sd_mounted()) {
     sd_save_snapshot(fb->buf, fb->len);
   }
 
-  AsyncWebServerResponse *r = request->beginResponse_P(200, "image/jpeg", fb->buf, fb->len);
+  size_t len = fb->len;
+  uint8_t *buf = (uint8_t *)ps_malloc(len);
+  if (!buf) {
+    esp_camera_fb_return(fb);
+    request->send(500, "text/plain", "out of PSRAM for snapshot");
+    return;
+  }
+  memcpy(buf, fb->buf, len);
+  esp_camera_fb_return(fb);
+
+  AsyncWebServerResponse *r = request->beginResponse(200, "image/jpeg", buf, len);
   r->addHeader("Cache-Control", "no-store");
   r->addHeader("Content-Disposition", "inline; filename=snapshot.jpg");
+  // Force Connection: close so onDisconnect fires promptly after the response
+  // is sent (otherwise keep-alive could hold the buffer alive indefinitely).
+  r->addHeader("Connection", "close");
+  request->onDisconnect([buf]() { free(buf); });
   request->send(r);
-
-  s_last_snap_fb = fb;  // released on next request
 }
 
 // ---------------------------------------------------------------------------
@@ -375,8 +384,12 @@ static void on_status(AsyncWebServerRequest *request) {
   doc["hostname"]       = device_hostname();
   doc["sd_total"]       = (uint32_t)(sd_total_bytes() / 1024);   // KB
   doc["sd_free"]        = (uint32_t)(sd_free_bytes()  / 1024);
-  doc["msc_active"]     = msc_active();
+  doc["sd_mounted"]     = sd_mounted();
   doc["camera_running"] = camera_running();
+  // Classic ESP32 internal temp sensor — uncalibrated, self-heats with CPU
+  // load. Useful as a relative indicator (e.g. "+15 °C under streaming
+  // load") rather than an absolute room-temperature reading.
+  doc["cpu_temp_c"]     = temperatureRead();
 
   String body; serializeJson(doc, body);
   request->send(200, "application/json", body);
@@ -456,10 +469,6 @@ static void on_flash_post_body(AsyncWebServerRequest *request, uint8_t *data,
 // /sd/list and /sd/get
 // ---------------------------------------------------------------------------
 static void on_sd_list(AsyncWebServerRequest *request) {
-  if (msc_active()) {
-    request->send(503, "text/plain", "SD owned by USB host");
-    return;
-  }
   if (!sd_mounted()) {
     request->send(503, "text/plain", "SD not mounted");
     return;
@@ -482,10 +491,6 @@ static const char *guess_mime(const String &path) {
 }
 
 static void on_sd_get(AsyncWebServerRequest *request) {
-  if (msc_active()) {
-    request->send(503, "text/plain", "SD owned by USB host");
-    return;
-  }
   if (!sd_mounted()) {
     request->send(503, "text/plain", "SD not mounted");
     return;
@@ -541,7 +546,7 @@ static void on_hostname_post_body(AsyncWebServerRequest *request, uint8_t *data,
 // ---------------------------------------------------------------------------
 void http_server_begin() {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", INDEX_HTML);
+    request->send(200, "text/html", INDEX_HTML);
   });
 
   server.on("/stream",   HTTP_GET,  on_stream);

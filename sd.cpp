@@ -1,4 +1,8 @@
-// sd.cpp — SD card mount, wifi.json reader, snapshot writer.
+// sd.cpp — SD card mount, snapshot writer.
+//
+// "Optional" semantics: a missing or unformatted SD card logs once and then
+// every public function returns the empty/false value. No throws, no
+// asserts. The web UI's SD endpoints reflect the missing state with 503s.
 
 #include <Arduino.h>
 #include <SD_MMC.h>
@@ -8,32 +12,38 @@
 #include "sd.h"
 #include "config.h"
 
-static bool s_mounted = false;
+static bool s_mounted     = false;
+static bool s_logged_absent = false;   // log "no card" only the first time
 
 bool sd_mount() {
   if (s_mounted) return true;
 
-  // Configure 1-bit mode pins. The S3 lets us pick — defaults to GPIO 14/15/2
-  // which conflict with the camera. setPins() must be called before begin().
   if (!SD_MMC.setPins(SD_PIN_CLK, SD_PIN_CMD, SD_PIN_D0)) {
     Serial.println("[sd] setPins failed");
     return false;
   }
 
-  // 1-bit mode, mount as "/sdcard" (default), format-on-fail disabled.
+  // 1-bit mode is mandatory — see comment in config.h re: GPIO4.
   if (!SD_MMC.begin("/sdcard", /*mode1bit=*/true)) {
-    Serial.println("[sd] mount failed");
+    if (!s_logged_absent) {
+      Serial.println("[sd] mount failed (no card or unformatted) — continuing without SD");
+      s_logged_absent = true;
+    }
     return false;
   }
 
   uint8_t type = SD_MMC.cardType();
   if (type == CARD_NONE) {
-    Serial.println("[sd] no card detected");
+    if (!s_logged_absent) {
+      Serial.println("[sd] no card present — continuing without SD");
+      s_logged_absent = true;
+    }
     SD_MMC.end();
     return false;
   }
 
-  s_mounted = true;
+  s_mounted       = true;
+  s_logged_absent = false;
   Serial.printf("[sd] mounted (%lluMB total / %lluMB free)\n",
                 SD_MMC.totalBytes() / (1024ULL * 1024ULL),
                 (SD_MMC.totalBytes() - SD_MMC.usedBytes()) / (1024ULL * 1024ULL));
@@ -50,63 +60,17 @@ void sd_unmount() {
 bool sd_mounted() { return s_mounted; }
 
 uint64_t sd_total_bytes() {
-  if (!s_mounted) return 0;
-  return SD_MMC.totalBytes();
+  return s_mounted ? SD_MMC.totalBytes() : 0;
 }
 
 uint64_t sd_free_bytes() {
-  if (!s_mounted) return 0;
-  return SD_MMC.totalBytes() - SD_MMC.usedBytes();
+  return s_mounted ? (SD_MMC.totalBytes() - SD_MMC.usedBytes()) : 0;
 }
 
-bool sd_load_wifi_creds(WifiCreds &out) {
-  if (!s_mounted) {
-    Serial.println("[sd] load_wifi_creds: not mounted");
-    return false;
-  }
-
-  File f = SD_MMC.open(SD_PATH_WIFI_JSON, FILE_READ);
-  if (!f) {
-    Serial.printf("[sd] %s not found\n", SD_PATH_WIFI_JSON);
-    return false;
-  }
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, f);
-  f.close();
-  if (err) {
-    Serial.printf("[sd] wifi.json parse error: %s\n", err.c_str());
-    return false;
-  }
-
-  const char *ssid = doc["ssid"] | "";
-  const char *pwd  = doc["password"] | "";
-  const char *host = doc["hostname"] | "";
-  if (!ssid || !*ssid) {
-    Serial.println("[sd] wifi.json missing 'ssid'");
-    return false;
-  }
-
-  out.ssid     = ssid;
-  out.password = pwd;
-  out.hostname = host;
-  Serial.printf("[sd] loaded wifi creds for SSID '%s'\n", ssid);
-  return true;
-}
-
-bool sd_clear_wifi_creds() {
-  if (!s_mounted) return false;
-  if (!SD_MMC.exists(SD_PATH_WIFI_JSON)) return true;
-  return SD_MMC.remove(SD_PATH_WIFI_JSON);
-}
-
-// Ensure /snapshots/YYYY-MM-DD/ exists, return that path. If time isn't
-// synced yet, use /snapshots/unsynced/.
 static String snapshot_dir_for_now() {
   time_t now;
   time(&now);
   String base = SD_PATH_SNAPSHOTS;
-
   if (!SD_MMC.exists(base)) SD_MMC.mkdir(base);
 
   if (now < 1700000000) {
@@ -126,8 +90,7 @@ static String snapshot_dir_for_now() {
 }
 
 String sd_save_snapshot(const uint8_t *jpg, size_t len) {
-  if (!s_mounted) return "";
-  if (!jpg || len == 0) return "";
+  if (!s_mounted || !jpg || len == 0) return "";
 
   String dir = snapshot_dir_for_now();
 
@@ -141,7 +104,6 @@ String sd_save_snapshot(const uint8_t *jpg, size_t len) {
              tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec,
              (unsigned long)(millis() % 1000));
   } else {
-    // No time — use millis() so files are at least unique within a session.
     snprintf(fname, sizeof(fname), "snap-%lu.jpg", (unsigned long)millis());
   }
 
@@ -174,7 +136,6 @@ String sd_list_json(const char *path) {
 
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
-
   File entry = dir.openNextFile();
   while (entry) {
     JsonObject o = arr.add<JsonObject>();

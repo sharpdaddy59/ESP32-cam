@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Preferences.h>
+#include <esp_mac.h>
 #include <ctype.h>
 
 #include "device_name.h"
@@ -18,14 +19,15 @@ static String s_active;
 static String s_mac;
 
 static void compute_default() {
-  String mac = WiFi.macAddress();
-  String compact;
-  compact.reserve(12);
-  for (size_t i = 0; i < mac.length(); i++) {
-    char c = mac[i];
-    if (c == ':') continue;
-    compact += (char)tolower((unsigned char)c);
-  }
+  // Read straight from efuse — WiFi.macAddress() returns all-zero until
+  // WiFi.mode() has been called, and we run before net_begin(). esp_read_mac
+  // doesn't depend on the peripheral being initialized.
+  uint8_t raw[6] = {0};
+  esp_read_mac(raw, ESP_MAC_WIFI_STA);
+  char compact_buf[13];
+  snprintf(compact_buf, sizeof(compact_buf), "%02x%02x%02x%02x%02x%02x",
+           raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
+  String compact = compact_buf;
   s_mac = compact;
 
   String suffix;

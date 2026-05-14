@@ -1,28 +1,25 @@
-// net.cpp — WiFi, mDNS, OTA, NTP plumbing for the ESP32-S3-CAM.
+// net.cpp — WiFi, mDNS, OTA, NTP for esp32-cam-v2.
 //
-// Connection model: creds come from /config/wifi.json on SD (see
-// wifi_setup.cpp). On boot we attempt a connection; on failure or after a
-// disconnect we retry on an exponential backoff. If MSC takes the SD away
-// and creds change, the firmware re-reads them on every reconnect attempt.
+// Wi-Fi provisioning is handed off to WiFiManager. It owns the captive
+// portal and its own NVS namespace for credentials, so we don't read or
+// write SSID/password ourselves. Our reconnect machine still runs once the
+// connection is up — WiFiManager doesn't monitor disconnects.
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
+#include <WiFiManager.h>
 #include <time.h>
 
 #include "net.h"
 #include "config.h"
 #include "device_name.h"
-#include "wifi_setup.h"
-#include "sd.h"
 
 enum class WifiPhase {
   Boot,
-  Connecting,
   Connected,
   Disconnected,
-  NoCreds,       // no wifi.json on SD — wait for one to appear
 };
 
 static WifiPhase s_phase = WifiPhase::Boot;
@@ -39,7 +36,6 @@ static volatile int  s_rssi      = 0;
 
 static const uint32_t NTP_RESYNC_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL;
 static const uint32_t NTP_RETRY_INTERVAL_MS  =  5UL * 60UL * 1000UL;
-static const uint32_t NOCREDS_RETRY_MS       = 10000;
 
 static uint32_t backoff_for_attempt(int n) {
   switch (n) {
@@ -96,7 +92,7 @@ static void on_wifi_event(WiFiEvent_t event) {
 
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       s_connected = false;
-      if (s_phase == WifiPhase::Connected || s_phase == WifiPhase::Connecting) {
+      if (s_phase == WifiPhase::Connected) {
         s_phase   = WifiPhase::Disconnected;
         s_attempt = 1;
         s_next_action_ms = millis() + backoff_for_attempt(1);
@@ -110,36 +106,36 @@ static void on_wifi_event(WiFiEvent_t event) {
   }
 }
 
-static bool try_connect_from_sd() {
-  WifiCreds creds;
-  if (!wifi_creds_load(creds)) {
-    Serial.println("[net] no creds on SD; entering NoCreds state");
-    s_phase = WifiPhase::NoCreds;
-    s_next_action_ms = millis() + NOCREDS_RETRY_MS;
-    return false;
-  }
-
-  // Apply hostname from JSON if present (only if user hasn't overridden
-  // via the /hostname endpoint).
-  if (creds.hostname.length() > 0) {
-    device_hostname_set(creds.hostname.c_str());
-  }
-
-  WiFi.setHostname(device_hostname());
-  Serial.printf("[net] connecting to '%s'...\n", creds.ssid.c_str());
-  WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
-  s_phase = WifiPhase::Connecting;
-  return true;
+// Construct AP name with the same MAC suffix the runtime hostname uses, so
+// you can tell two boards apart in the WiFi picker.
+static String build_ap_name() {
+  String mac = device_mac();   // 12-hex, lowercase
+  String suffix = mac.length() >= 4 ? mac.substring(mac.length() - 4) : mac;
+  return String(WM_AP_PREFIX) + "-" + suffix;
 }
 
 void net_begin() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(false);
-  WiFi.persistent(false);
+  WiFi.persistent(true);   // WiFiManager wants creds persisted to NVS
   WiFi.onEvent(on_wifi_event);
   WiFi.setHostname(device_hostname());
 
-  try_connect_from_sd();
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(WM_PORTAL_TIMEOUT_S);
+  // Don't auto-close the portal on first failed connect attempt — give the
+  // user a chance to fix a typo without rebooting.
+  wm.setBreakAfterConfig(true);
+
+  String ap = build_ap_name();
+  Serial.printf("[net] WiFiManager: trying saved creds, AP fallback '%s'\n", ap.c_str());
+
+  if (!wm.autoConnect(ap.c_str())) {
+    Serial.println("[net] WiFiManager: portal timed out / connect failed; rebooting to retry");
+    delay(500);
+    ESP.restart();
+  }
+  // Connected. GOT_IP event will have fired and set s_phase = Connected.
 }
 
 void net_loop() {
@@ -151,26 +147,10 @@ void net_loop() {
   }
 
   switch (s_phase) {
-    case WifiPhase::NoCreds:
-      if ((int32_t)(now - s_next_action_ms) >= 0) {
-        // Poll for newly-arrived wifi.json (e.g. after MSC eject).
-        try_connect_from_sd();
-      }
-      break;
-
     case WifiPhase::Disconnected:
       if ((int32_t)(now - s_next_action_ms) >= 0) {
         Serial.printf("[net] reconnect attempt %d\n", s_attempt);
-        // Re-read creds in case they changed via MSC during downtime.
-        WifiCreds creds;
-        if (wifi_creds_load(creds)) {
-          WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
-          s_phase = WifiPhase::Connecting;
-        } else {
-          s_phase = WifiPhase::NoCreds;
-          s_next_action_ms = now + NOCREDS_RETRY_MS;
-          break;
-        }
+        WiFi.reconnect();
         s_attempt++;
         s_next_action_ms = now + backoff_for_attempt(s_attempt);
       }
@@ -180,9 +160,7 @@ void net_loop() {
       s_rssi = WiFi.RSSI();
       {
         uint32_t interval = s_ntp_synced ? NTP_RESYNC_INTERVAL_MS : NTP_RETRY_INTERVAL_MS;
-        if ((now - s_last_ntp_attempt_ms) > interval) {
-          try_ntp_sync();
-        }
+        if ((now - s_last_ntp_attempt_ms) > interval) try_ntp_sync();
       }
       break;
 
@@ -197,8 +175,9 @@ bool net_is_connected() { return s_connected; }
 int  net_rssi()         { return s_rssi; }
 
 void net_reset_credentials() {
-  Serial.println("[net] wiping creds from SD and rebooting");
-  wifi_creds_clear();
+  Serial.println("[net] wiping creds and rebooting");
+  WiFiManager wm;
+  wm.resetSettings();
   delay(200);
   ESP.restart();
 }

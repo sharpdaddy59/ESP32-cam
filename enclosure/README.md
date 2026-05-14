@@ -1,7 +1,7 @@
 # ESP32-S3-CAM Enclosure
 
 Parametric, friction-fit, snap-together 3D-printable case for the
-[nulllaborg ESP32-S3-CAM](https://github.com/nulllaborg/esp32s3-cam).
+[nulllaborg ESP32-S3-CAM](https://github.com/nulllaborg/esp32-cam-v2).
 No screws, no metal inserts — the four PCB mount posts double as the
 case-closure mechanism.
 

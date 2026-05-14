@@ -1,31 +1,28 @@
-// net.h — WiFi, mDNS, OTA plumbing for the ESP32-S3-CAM.
+// net.h — WiFi (via WiFiManager captive portal), mDNS, OTA, NTP.
 //
-// Simpler than cores3-hydro's net.* because:
-//   - no captive portal (creds come from SD via wifi_setup)
-//   - no display
-//   - NTP retained for snapshot timestamps
+// Provisioning flow:
+//   - Boot calls net_begin() which calls WiFiManager.autoConnect().
+//   - If creds are stored in NVS: connect normally.
+//   - If creds are missing or stale: open an open AP "esp32cam-setup-XXXX",
+//     present a captive portal at 192.168.4.1, accept SSID/password,
+//     persist them in NVS, reboot to use them.
+//   - If the portal times out with no client: reboot to retry.
 //
-// Call net_begin() once during setup() AFTER device_name_init() and the
-// initial sd_mount() / wifi_creds_load(). Call net_loop() from loop().
+// net_begin() BLOCKS until WiFi is connected or the portal times out.
+// http_server_begin() MUST be called after net_begin() — both want port 80.
 
 #pragma once
 
 #include <Arduino.h>
 
-// Bring up WiFi from the loaded creds. Non-blocking — if the connect fails
-// or no creds are loaded, the reconnect machine retries in the background.
 void net_begin();
-
-// Call from loop(). Drives the reconnect machine, OTA polling, NTP sync.
 void net_loop();
 
-// True if WiFi is currently associated and has an IP.
 bool net_is_connected();
-
 int  net_rssi();
 
-// Wipe /config/wifi.json on SD and reboot.
+// Wipe NVS-stored creds (WiFiManager + our own preferences) and reboot.
 void net_reset_credentials();
 
-// Re-announce mDNS and update OTA hostname after a runtime hostname change.
+// Re-announce mDNS and OTA after a hostname change.
 void net_apply_hostname_change();

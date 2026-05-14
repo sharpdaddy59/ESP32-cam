@@ -41,17 +41,35 @@ arduino-cli core install esp32:esp32
 
 $libs = @(
     'ArduinoJson'
-    'ESP Async WebServer'   # ESPAsyncWebServer; includes AsyncTCP as dep on ESP32
-    'AsyncTCP'              # explicit in case the dep edge moves
+    'ESP Async WebServer'   # the ESP32Async fork (v3.x) — pulled by name OK
+    'WiFiManager'           # captive portal for Wi-Fi provisioning
 )
 foreach ($lib in $libs) {
     Write-Host "[setup] Installing library: $lib"
     arduino-cli lib install "$lib"
 }
 
+# AsyncTCP MUST be the ESP32Async fork (v3.x) — the older dvarrel listing
+# (1.1.4) that `arduino-cli lib install AsyncTCP` resolves to is missing the
+# TCPIP-core-locking calls that arduino-esp32 3.x requires, and crashes with
+# "assert failed: tcp_alloc ... Required to lock TCPIP core functionality!"
+# the moment the first AsyncWebServer client connects.
+#
+# We install from the GitHub URL to bypass the Library Manager naming
+# collision. Requires the `enable_unsafe_install` config flag, which is the
+# stock way to allow --git-url installs.
+Write-Host '[setup] Uninstalling any pre-existing AsyncTCP (will be replaced)...'
+arduino-cli lib uninstall AsyncTCP 2>$null | Out-Null
+
+Write-Host '[setup] Enabling git-url library installs...'
+arduino-cli config set library.enable_unsafe_install true | Out-Null
+
+Write-Host '[setup] Installing ESP32Async/AsyncTCP (the version with TCPIP core locking)...'
+arduino-cli lib install --git-url https://github.com/ESP32Async/AsyncTCP.git
+
 Write-Host ''
-Write-Host '[setup] Verifying ESP32-S3 board is recognized...'
-arduino-cli board listall esp32 | Select-String -Pattern 's3' -CaseSensitive:$false
+Write-Host '[setup] Verifying esp32cam board target is available...'
+arduino-cli board listall esp32 | Select-String -Pattern 'esp32cam' -CaseSensitive:$false
 
 Write-Host ''
 Write-Host '[setup] Done. Try a build with:    .\build.ps1'

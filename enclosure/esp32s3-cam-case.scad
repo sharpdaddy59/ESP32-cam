@@ -26,7 +26,7 @@
 // Top-of-file `mode` selects what to render:
 //   "lid" / "back" / "assembly" / "exploded"
 
-mode = "exploded";
+mode = "lid";
 
 // =============================================================
 // FEATURE TOGGLES — flip these to include/exclude optional parts.
@@ -48,18 +48,18 @@ USE_KEYHOLE        = false;   // wall-mount keyhole on back face
 
 // ----- PCB ----------------------------------------------------
 // From picture/esp32s3_cam_size.png. MEASURE on your board.
-PCB_LEN              = 38.4;   // long edge of the PCB
-PCB_WID              = 30.4;   // short edge
+PCB_LEN              = 40.0;   // long edge of the PCB
+PCB_WID              = 27.0;   // short edge
 PCB_THK              =  1.6;   // PCB thickness alone
-MOUNT_HOLE_DIAM      =  2.2;   // M2 clearance (through-hole on PCB)
-MOUNT_HOLE_INSET     =  3.2;   // centre-of-hole to nearest PCB edge
+MOUNT_HOLE_DIAM      =  2.7;   // M2 clearance (through-hole on PCB)
+MOUNT_HOLE_INSET     =  2.0;   // centre-of-hole to nearest PCB edge
 
 // ----- Camera lens window (in the lid) ------------------------
 // The camera module floats on a 24-pin FFC, so its position is
 // mechanically flexible. The lens folds over the WROOM-1 module and
 // looks straight up through this hole. MEASURE/ADJUST as needed.
-LENS_HOLE_DIAM       =  9.0;   // ~OV2640/OV3660 lens barrel clearance
-LENS_HOLE_X          = PCB_LEN / 2;   // PCB-local X of hole centre
+LENS_HOLE_DIAM       =  10.0;   // ~OV2640/OV3660 lens barrel clearance
+LENS_HOLE_X          = 11.5;   // PCB-local X of hole centre
 LENS_HOLE_Y          = PCB_WID / 2;   // PCB-local Y of hole centre
 
 // ----- Flash LED holes (in the lid) ---------------------------
@@ -68,8 +68,8 @@ LENS_HOLE_Y          = PCB_WID / 2;   // PCB-local Y of hole centre
 // (i.e. the -X short edge). The LEDs sit along that short edge with
 // the FFC connector between them. MEASURE on your board.
 FLASH_LED_HOLE_DIAM   =  2.0;
-FLASH_LED_PITCH       = 15.0;  // centre-to-centre distance between LEDs (along Y)
-FLASH_LED_X_FROM_EDGE =  6.0;  // distance from PCB -X edge to LED centres
+FLASH_LED_PITCH       = -23.0;  // centre-to-centre distance between LEDs (along Y)
+FLASH_LED_X_FROM_EDGE =  9.0;  // distance from PCB -X edge to LED centres
 
 // ----- USB-C connector (PCB +X short edge, surface-mount) -----
 // "Y position" = distance from PCB -Y edge to centre of connector.
@@ -80,7 +80,7 @@ FLASH_LED_X_FROM_EDGE =  6.0;  // distance from PCB -X edge to LED centres
 // the opening is only that size.
 // MEASURE on your board; bump up if your cable still won't fit.
 USB_C_WIDTH          = 9.0;   // cable-overmold clearance, width
-USB_C_HEIGHT         =  6.0;   // cable-overmold clearance, height
+USB_C_HEIGHT         =  5.0;   // cable-overmold clearance, height
 USB_C_Y_CENTER       = PCB_WID / 2;   // centred on short edge
 USB_C_Z_OFFSET       =  3.2;   // centre relative to PCB BOTTOM (positive = above PCB)
 USB_CUTOUT_SLACK     =  0.6;   // extra clearance around the cutout
@@ -115,7 +115,7 @@ BATTERY_Z_OFFSET     =  2.5;
 WALL                 =  2.0;
 PCB_PERIMETER_GAP    =  0.4;   // case-to-PCB tolerance (each side)
 BACK_DEPTH           =  3.0;   // space below PCB (bottom of S3-CAM is flat)
-FRONT_DEPTH          = 12.0;   // space above PCB (camera lens stack-up)
+FRONT_DEPTH          = 7.0;   // space above PCB (camera lens stack-up)
 CASE_FILLET          =  2.0;   // outer corner rounding
 $fn                  = 64;
 
@@ -143,7 +143,7 @@ $fn                  = 64;
 // because the S3-CAM's MOUNT_HOLE_INSET is only 3.2mm; a 4.5mm
 // shoulder would overhang the PCB edge.
 PCB_POST_SHOULDER_DIAM =  3.6; // wider seat the PCB rests on
-PCB_POST_DIAM          =  1.7; // upper shaft, through M2 hole fit
+PCB_POST_DIAM          =  2.0; // upper shaft, through M2 hole fit
 PCB_POST_PROTRUDE      =  3.5; // shaft extends above PCB top to engage lid bore
 
 // ----- Lid mating posts ---------------------------------------
@@ -157,8 +157,8 @@ PCB_POST_PROTRUDE      =  3.5; // shaft extends above PCB top to engage lid bore
 //   - too loose? decrease (toward PCB_POST_DIAM = 1.7)
 //   - too tight? increase by 0.05 mm at a time
 FRONT_POST_OD        =  3.6;
-FRONT_BORE_DIAM      =  2.1;   // light interference with 1.7mm shaft
-FRONT_POST_LEN       =  12.0;
+FRONT_BORE_DIAM      =  2.2;   // light interference with 1.7mm shaft
+FRONT_POST_LEN       =  6.5;
 FRONT_BORE_TOP_GAP   =  1.0;
 
 // ----- Pry slot (for disassembly) -----------------------------
@@ -344,7 +344,7 @@ module lid() {
       // flanking the camera FFC connector along the Y axis.
       if (USE_FLASH_HOLES) {
         led_x = FLASH_LED_X_FROM_EDGE;
-        for (dy = [-FLASH_LED_PITCH/2, FLASH_LED_PITCH/2])
+        for (dy = [-FLASH_LED_PITCH/2])
           translate([led_x, PCB_WID/2 + dy,
                      SEAM_Z + FRONT_DEPTH - 0.01])
             cylinder(d=FLASH_LED_HOLE_DIAM, h=WALL + 1);
