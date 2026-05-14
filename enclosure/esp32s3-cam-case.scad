@@ -26,14 +26,14 @@
 // Top-of-file `mode` selects what to render:
 //   "lid" / "back" / "assembly" / "exploded"
 
-mode = "lid";
+mode = "assembly";
 
 // =============================================================
 // FEATURE TOGGLES — flip these to include/exclude optional parts.
 // =============================================================
 USE_USB_C          = true;    // USB-C cutout on the right short edge
 USE_FLASH_HOLES    = true;    // 2 holes in lid for the GPIO3 flash LEDs
-USE_SD_SLOT        = false;   // microSD slot on bottom long edge
+USE_SD_SLOT        = true;   // microSD slot on bottom long edge
 USE_BUTTON_HOLES   = false;   // BOOT + RESET pinholes (paperclip access)
 USE_IPEX_CUTOUT    = false;   // slot for external antenna pigtail
 USE_BATTERY_CUTOUT = false;   // slot for JST PH2.0 battery cable
@@ -67,8 +67,8 @@ LENS_HOLE_Y          = PCB_WID / 2;   // PCB-local Y of hole centre
 // FFC connector along the SHORT edge of the PCB opposite the USB-C
 // (i.e. the -X short edge). The LEDs sit along that short edge with
 // the FFC connector between them. MEASURE on your board.
-FLASH_LED_HOLE_DIAM   =  2.0;
-FLASH_LED_PITCH       = -23.0;  // centre-to-centre distance between LEDs (along Y)
+FLASH_LED_HOLE_DIAM   =  3.0;
+FLASH_LED_PITCH       = -22.0;  // centre-to-centre distance between LEDs (along Y)
 FLASH_LED_X_FROM_EDGE =  9.0;  // distance from PCB -X edge to LED centres
 
 // ----- USB-C connector (PCB +X short edge, surface-mount) -----
@@ -88,7 +88,7 @@ USB_CUTOUT_SLACK     =  0.6;   // extra clearance around the cutout
 // ----- microSD slot (bottom long edge, optional) --------------
 SD_SLOT_WIDTH        = 14.0;
 SD_SLOT_HEIGHT       =  2.0;
-SD_SLOT_X_CENTER     = 24.0;   // PCB-local X of slot centre — MEASURE
+SD_SLOT_X_CENTER     = 13.0;   // PCB-local X of slot centre — MEASURE
 SD_SLOT_Z_OFFSET     =  2.5;   // centre relative to PCB BOTTOM
 SD_CUTOUT_SLACK      =  0.8;
 
@@ -158,7 +158,7 @@ PCB_POST_PROTRUDE      =  3.5; // shaft extends above PCB top to engage lid bore
 //   - too tight? increase by 0.05 mm at a time
 FRONT_POST_OD        =  3.6;
 FRONT_BORE_DIAM      =  2.2;   // light interference with 1.7mm shaft
-FRONT_POST_LEN       =  6.5;
+FRONT_POST_LEN       =  7.5;
 FRONT_BORE_TOP_GAP   =  1.0;
 
 // ----- Pry slot (for disassembly) -----------------------------
