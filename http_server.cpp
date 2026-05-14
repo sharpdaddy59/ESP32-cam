@@ -73,6 +73,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   <div class="grid" id="camGrid"></div>
   <div class="row" style="margin-top:.8em;">
     <button id="camSave">Apply</button>
+    <button class="ghost" id="camReset">Reset to defaults</button>
   </div>
 </details>
 
@@ -179,16 +180,28 @@ $('#camSave').onclick = async () => {
   $('#stream').src = '/stream?t=' + Date.now();
 };
 
+$('#camReset').onclick = async () => {
+  if (!confirm('Clear saved camera settings and reboot to defaults?')) return;
+  await fetch('/camera/reset', { method:'POST' });
+};
+
 // Flash LED
 const flashRange = $('#flashRange'), flashVal = $('#flashVal');
 async function loadFlash() {
   const r = await fetch('/flash'); const j = await r.json();
   flashRange.value = j.duty; flashVal.textContent = j.duty;
 }
-flashRange.oninput = async () => {
+// oninput fires continuously while dragging — send live updates without
+// the save=true side-effect so we don't thrash NVS at every slider tick.
+flashRange.oninput = () => {
   flashVal.textContent = flashRange.value;
-  await fetch('/flash', { method:'POST', headers:{'Content-Type':'application/json'},
-                          body: JSON.stringify({ duty: Number(flashRange.value) }) });
+  fetch('/flash', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ duty: Number(flashRange.value), save: false }) });
+};
+// onchange fires once when the slider is released — that's when we commit.
+flashRange.onchange = () => {
+  fetch('/flash', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ duty: Number(flashRange.value), save: true }) });
 };
 
 // Status
@@ -436,7 +449,17 @@ static void on_camera_post_body(AsyncWebServerRequest *request, uint8_t *data,
   cs.ae_level   = doc["ae_level"]   | -100;
   cs.agc_gain   = doc["agc_gain"]   | -1;
   camera_apply_settings(cs);
+  camera_save_settings();   // persist to NVS so the next boot keeps them
   on_camera_get(request);
+}
+
+// POST /camera/reset — clear saved overrides and reboot so camera_start()'s
+// defaults take effect on a clean slate.
+static void on_camera_reset(AsyncWebServerRequest *request) {
+  camera_clear_saved_settings();
+  request->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+  delay(200);
+  ESP.restart();
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +484,12 @@ static void on_flash_post_body(AsyncWebServerRequest *request, uint8_t *data,
     request->send(400, "text/plain", "duty must be 0..255");
     return;
   }
+  // Optional "save" key gates the NVS write. Defaults to true so curl /
+  // scripted callers get persistence by default; the UI sends save=false
+  // during slider drag and save=true on release.
+  bool save = doc["save"] | true;
   flash_led_set((uint8_t)duty);
+  if (save) flash_led_save();
   on_flash_get(request);
 }
 
@@ -553,9 +581,10 @@ void http_server_begin() {
   server.on("/snapshot", HTTP_GET,  on_snapshot);
   server.on("/status",   HTTP_GET,  on_status);
 
-  server.on("/camera",   HTTP_GET,  on_camera_get);
-  server.on("/camera",   HTTP_POST,
+  server.on("/camera",       HTTP_GET,  on_camera_get);
+  server.on("/camera",       HTTP_POST,
             [](AsyncWebServerRequest *r){}, nullptr, on_camera_post_body);
+  server.on("/camera/reset", HTTP_POST, on_camera_reset);
 
   server.on("/flash",    HTTP_GET,  on_flash_get);
   server.on("/flash",    HTTP_POST,

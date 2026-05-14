@@ -42,8 +42,24 @@ bool camera_apply_settings(const CameraSettings &s);
 // for the GET /camera endpoint and after-update echoes.
 CameraSettings camera_get_settings();
 
-// Flash LED PWM (both LEDs are on the same GPIO3, so this drives both).
-// duty is 0..255.
+// Persist the current sensor settings to NVS (namespace "cam"). Call after
+// a successful camera_apply_settings() in the HTTP handler.
+void camera_save_settings();
+
+// Load any saved settings from NVS and apply to the sensor. Call once at
+// boot, after camera_start(). No-op when NVS is empty (sensor keeps the
+// defaults set by camera_start).
+void camera_load_and_apply_settings();
+
+// Clear the "cam" NVS namespace. After this, the next boot loads no
+// overrides and the sensor uses camera_start()'s defaults.
+void camera_clear_saved_settings();
+
+// Flash LED PWM (single GPIO, drives both LEDs in parallel). duty is 0..255.
 void flash_led_init();
 void flash_led_set(uint8_t duty);
 uint8_t flash_led_get();
+
+// Persist / load the current flash duty in NVS (namespace "flash").
+void flash_led_save();
+void flash_led_load();

@@ -6,10 +6,14 @@
 // on which one your unit shipped with.
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_camera.h>
 
 #include "camera.h"
 #include "config.h"
+
+static const char *NS_CAM   = "cam";
+static const char *NS_FLASH = "flash";
 
 // AI-Thinker pin constants — duplicated locally so we don't depend on the
 // esp32-camera examples folder being on the include path.
@@ -190,3 +194,90 @@ void flash_led_set(uint8_t duty) {
 }
 
 uint8_t flash_led_get() { return s_flash_duty; }
+
+// ---------------------------------------------------------------------------
+// NVS persistence
+//
+// CameraSettings uses -1 (and -100 for the centred -2..+2 sliders) as "leave
+// unchanged" sentinels in camera_apply_settings. We use the same sentinels
+// as the Preferences default values, so a missing NVS key means "don't
+// touch that field" and the sensor keeps the boot defaults set in
+// camera_start().
+// ---------------------------------------------------------------------------
+
+void camera_save_settings() {
+  CameraSettings cs = camera_get_settings();
+  Preferences prefs;
+  if (!prefs.begin(NS_CAM, /*readOnly=*/false)) {
+    Serial.println("[cam] NVS open failed (save)");
+    return;
+  }
+  prefs.putInt("framesize",  cs.framesize);
+  prefs.putInt("quality",    cs.quality);
+  prefs.putInt("brightness", cs.brightness);
+  prefs.putInt("contrast",   cs.contrast);
+  prefs.putInt("saturation", cs.saturation);
+  prefs.putInt("hmirror",    cs.hmirror);
+  prefs.putInt("vflip",      cs.vflip);
+  prefs.putInt("wb_mode",    cs.wb_mode);
+  prefs.putInt("ae_level",   cs.ae_level);
+  prefs.putInt("agc_gain",   cs.agc_gain);
+  prefs.end();
+  Serial.println("[cam] saved settings to NVS");
+}
+
+void camera_load_and_apply_settings() {
+  Preferences prefs;
+  if (!prefs.begin(NS_CAM, /*readOnly=*/true)) {
+    // First-boot or NVS unavailable. Not an error — sensor keeps boot defaults.
+    return;
+  }
+  CameraSettings cs;
+  cs.framesize  = prefs.getInt("framesize",  -1);
+  cs.quality    = prefs.getInt("quality",    -1);
+  cs.brightness = prefs.getInt("brightness", -100);   // -100 = "not stored"
+  cs.contrast   = prefs.getInt("contrast",   -100);
+  cs.saturation = prefs.getInt("saturation", -100);
+  cs.hmirror    = prefs.getInt("hmirror",    -1);
+  cs.vflip      = prefs.getInt("vflip",      -1);
+  cs.wb_mode    = prefs.getInt("wb_mode",    -1);
+  cs.ae_level   = prefs.getInt("ae_level",   -100);
+  cs.agc_gain   = prefs.getInt("agc_gain",   -1);
+  prefs.end();
+
+  if (camera_apply_settings(cs)) {
+    Serial.println("[cam] applied saved settings from NVS");
+  }
+}
+
+void camera_clear_saved_settings() {
+  Preferences prefs;
+  if (!prefs.begin(NS_CAM, /*readOnly=*/false)) {
+    Serial.println("[cam] NVS open failed (clear)");
+    return;
+  }
+  prefs.clear();
+  prefs.end();
+  Serial.println("[cam] cleared saved settings");
+}
+
+// Flash LED persistence is opt-in (the HTTP handler decides whether to
+// save), so the slider can stream live updates during a drag without
+// hammering NVS, only writing once on release.
+void flash_led_save() {
+  Preferences prefs;
+  if (!prefs.begin(NS_FLASH, /*readOnly=*/false)) return;
+  prefs.putUChar("duty", s_flash_duty);
+  prefs.end();
+}
+
+void flash_led_load() {
+  Preferences prefs;
+  if (!prefs.begin(NS_FLASH, /*readOnly=*/true)) return;
+  uint8_t duty = prefs.getUChar("duty", 0);
+  prefs.end();
+  if (duty != 0) {
+    flash_led_set(duty);
+    Serial.printf("[flash] restored duty=%u from NVS\n", duty);
+  }
+}

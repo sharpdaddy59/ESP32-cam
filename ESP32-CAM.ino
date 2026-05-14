@@ -43,8 +43,15 @@ void setup() {
     Serial.println("[boot] WARNING: camera init failed — /stream and /snapshot will 500.");
     Serial.println("[boot] Verify the FFC is fully seated and the lens isn't covered.");
   }
+  // Overlay any user-tuned camera settings persisted to NVS by previous
+  // /camera POSTs. No-op on first boot or after /camera/reset.
+  camera_load_and_apply_settings();
 
   flash_led_init();
+  // Restore last saved flash-LED duty. The LED comes on at the last
+  // committed value at boot — set the slider to 0 and Apply if you want
+  // it dark by default.
+  flash_led_load();
 
   device_name_init();
 
