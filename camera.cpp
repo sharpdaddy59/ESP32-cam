@@ -127,6 +127,50 @@ bool camera_start() {
   return true;
 }
 
+bool camera_start_motion() {
+  if (s_running) return true;
+
+  camera_config_t cfg = {};
+  cfg.ledc_channel = LEDC_CHANNEL_0;
+  cfg.ledc_timer   = LEDC_TIMER_0;
+  cfg.pin_d0       = CAM_PIN_D0;
+  cfg.pin_d1       = CAM_PIN_D1;
+  cfg.pin_d2       = CAM_PIN_D2;
+  cfg.pin_d3       = CAM_PIN_D3;
+  cfg.pin_d4       = CAM_PIN_D4;
+  cfg.pin_d5       = CAM_PIN_D5;
+  cfg.pin_d6       = CAM_PIN_D6;
+  cfg.pin_d7       = CAM_PIN_D7;
+  cfg.pin_xclk     = CAM_PIN_XCLK;
+  cfg.pin_pclk     = CAM_PIN_PCLK;
+  cfg.pin_vsync    = CAM_PIN_VSYNC;
+  cfg.pin_href     = CAM_PIN_HREF;
+  cfg.pin_sccb_sda = CAM_PIN_SIOD;
+  cfg.pin_sccb_scl = CAM_PIN_SIOC;
+  cfg.pin_pwdn     = CAM_PIN_PWDN;
+  cfg.pin_reset    = CAM_PIN_RESET;
+  cfg.xclk_freq_hz = 20000000;
+  cfg.pixel_format = PIXFORMAT_GRAYSCALE;
+  cfg.frame_size   = FRAMESIZE_QVGA;     // 320x240 = 76,800 bytes
+  // fb_count=3: with 2 buffers, holding one for the SAD work + brief
+  // JPEG encode meant the DMA had only one buffer to rotate, and any
+  // hiccup in our consumer cadence produced FB-OVF storms. 3 buffers
+  // give DMA at least 2 to rotate even while we hold one. PSRAM cost:
+  // ~76 KB extra (3 × QVGA grayscale). Trivial in 2 MB.
+  cfg.fb_count     = 3;
+  cfg.fb_location  = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+  cfg.grab_mode    = CAMERA_GRAB_LATEST;
+
+  esp_err_t err = esp_camera_init(&cfg);
+  if (err != ESP_OK) {
+    Serial.printf("[cam] motion-mode init failed: 0x%x\n", err);
+    return false;
+  }
+  s_running = true;
+  Serial.println("[cam] init OK (motion mode: GRAYSCALE @ QVGA)");
+  return true;
+}
+
 void camera_stop() {
   if (!s_running) return;
   esp_camera_deinit();

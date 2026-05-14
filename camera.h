@@ -5,11 +5,17 @@
 #include <Arduino.h>
 #include <esp_camera.h>
 
-// Initialize the camera with sensible defaults (UXGA frame size when PSRAM
-// is available, JPEG quality 10). Returns true on success. Camera frame
-// buffers are allocated in PSRAM — call this EARLY in setup() before WiFi
-// and the web server fragment the heap.
+// Initialize the camera for streaming/snapshots: JPEG @ UXGA (or SVGA
+// without PSRAM). Returns true on success. Call EARLY in setup() before
+// WiFi and the web server fragment the heap.
 bool camera_start();
+
+// Initialize the camera for motion detection: GRAYSCALE @ QVGA. Switching
+// between this and camera_start() requires a camera_stop() in between —
+// the esp_camera library doesn't support a clean in-place pixel-format
+// change. Motion mode uses smaller buffers (~76 KB per frame vs ~250 KB
+// for UXGA JPEG) so it's strictly cheaper on PSRAM.
+bool camera_start_motion();
 
 // Free all camera resources (called before MSC mode if needed for memory).
 // camera_start() can be called again afterwards.

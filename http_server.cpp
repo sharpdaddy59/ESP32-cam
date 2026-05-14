@@ -12,6 +12,7 @@
 #include <SD_MMC.h>
 #include <WiFi.h>
 #include <esp_camera.h>
+#include <img_converters.h>
 #include <time.h>
 
 #include "http_server.h"
@@ -21,6 +22,7 @@
 #include "device_name.h"
 #include "net.h"
 #include "ota.h"
+#include "motion.h"
 
 static AsyncWebServer server(HTTP_PORT);
 
@@ -60,12 +62,18 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   a { color:var(--accent); }
   code { background:var(--bg); padding:1px 4px; border-radius:3px; }
 </style></head><body>
-<h1>ESP32-S3-CAM</h1>
-<p><span class="pill" id="hostnamePill">…</span><span class="pill" id="sdPill">…</span><span class="pill" id="wifiPill">…</span></p>
-<img class="stream" id="stream" src="/stream" alt="live stream">
+<h1>ESP32-CAM</h1>
+<p><span class="pill" id="hostnamePill">…</span><span class="pill" id="modePill">…</span><span class="pill" id="sdPill">…</span><span class="pill" id="wifiPill">…</span></p>
+<div class="row" id="modeBar">
+  <button data-mode="0" class="ghost">Idle</button>
+  <button data-mode="1" class="ghost">Stream</button>
+  <button data-mode="2" class="ghost">Motion</button>
+</div>
+<img class="stream" id="stream" alt="(loading...)">
+<div id="viewerNote" style="text-align:center; color:var(--muted); margin-top:-.4em; min-height:1.2em;"></div>
 <div class="row">
   <button id="snap">Snapshot</button>
-  <button class="ghost" id="reloadStream">Reload stream</button>
+  <button class="ghost" id="reloadStream">Reload</button>
   <a href="/ota">Firmware update</a>
 </div>
 
@@ -83,6 +91,25 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
     <input type="range" id="flashRange" min="0" max="255" value="0">
     <span class="val" id="flashVal">0</span>
   </div>
+</details>
+
+<details><summary>Motion detection</summary>
+  <p style="color:var(--muted); margin:.4em 0;">Switch the mode at the top to <b>Motion</b> to activate. Lower sensitivity = trigger on smaller changes. Cooldown suppresses repeat triggers for N seconds after each.</p>
+  <div class="grid">
+    <label>Sensitivity</label>
+    <input type="range" id="motionThreshold" min="1" max="50" step="1">
+    <span class="val" id="motionThresholdVal">—</span>
+    <label>Cooldown (s)</label>
+    <input type="range" id="motionCooldown" min="1" max="600" step="1">
+    <span class="val" id="motionCooldownVal">—</span>
+    <label>Webhook URL</label>
+    <input type="text" id="motionWebhook" placeholder="https://… (optional)" style="font:inherit; padding:.2em; min-width:0;">
+    <span></span>
+  </div>
+  <div class="row" style="margin-top:.8em">
+    <button id="motionSave">Save</button>
+  </div>
+  <table class="status" id="motionStatusTbl" style="margin-top:1em;"></table>
 </details>
 
 <details><summary>Status</summary>
@@ -111,11 +138,96 @@ const fmt = (n, unit) => n == null ? '—' : (Math.round(n*10)/10) + (unit||'');
 // Snapshot — open the JPEG in a new tab.
 $('#snap').onclick = () => window.open('/snapshot?t=' + Date.now(), '_blank');
 
-// Reload stream by re-setting src (cache-bust).
-$('#reloadStream').onclick = () => {
+// Reload current view (whatever the mode is).
+$('#reloadStream').onclick = () => applyMode(currentMode);
+
+// Mode handling -----------------------------------------------------------
+let currentMode = 0;
+function applyMode(mode) {
+  document.querySelectorAll('[data-mode]').forEach(b => {
+    b.className = (Number(b.dataset.mode) === mode) ? '' : 'ghost';
+  });
+  const names = ['idle','stream','motion'];
+  $('#modePill').textContent = names[mode] || '?';
+  $('#modePill').className = 'pill ' + (mode === 0 ? 'warn' : 'ok');
   const img = $('#stream');
-  img.src = '/stream?t=' + Date.now();
+  const note = $('#viewerNote');
+  if (mode === 1) {
+    img.src = '/stream?t=' + Date.now();
+    img.style.opacity = '1';
+    note.textContent = '';
+  } else if (mode === 2) {
+    img.src = '/motion/last.jpg?t=' + Date.now();
+    img.style.opacity = '1';
+    note.textContent = 'Most recent triggered frame (or blank if no trigger yet)';
+  } else {
+    img.removeAttribute('src');
+    img.style.opacity = '.15';
+    note.textContent = 'Idle — live view disabled. Snapshot still works.';
+  }
+}
+async function loadMode() {
+  const j = await (await fetch('/mode')).json();
+  currentMode = j.mode;
+  applyMode(j.mode);
+}
+document.querySelectorAll('[data-mode]').forEach(b => {
+  b.onclick = async () => {
+    const m = Number(b.dataset.mode);
+    if (m === currentMode) return;
+    document.querySelectorAll('[data-mode]').forEach(x => x.disabled = true);
+    try {
+      await fetch('/mode', { method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({mode: m}) });
+      // Camera reconfig takes ~1 s in/out of motion mode.
+      await new Promise(r => setTimeout(r, 1500));
+      await loadMode();
+    } finally {
+      document.querySelectorAll('[data-mode]').forEach(x => x.disabled = false);
+    }
+  };
+});
+
+// Motion config -----------------------------------------------------------
+async function loadMotion() {
+  const c = await (await fetch('/motion/config')).json();
+  $('#motionThreshold').value = c.threshold;
+  $('#motionThresholdVal').textContent = c.threshold;
+  $('#motionCooldown').value = c.cooldown_s;
+  $('#motionCooldownVal').textContent = c.cooldown_s;
+  $('#motionWebhook').value = c.webhook || '';
+}
+$('#motionThreshold').oninput = () => $('#motionThresholdVal').textContent = $('#motionThreshold').value;
+$('#motionCooldown').oninput  = () => $('#motionCooldownVal').textContent  = $('#motionCooldown').value;
+$('#motionSave').onclick = async () => {
+  await fetch('/motion/config', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      threshold:  Number($('#motionThreshold').value),
+      cooldown_s: Number($('#motionCooldown').value),
+      webhook:    $('#motionWebhook').value
+    }) });
 };
+async function loadMotionStatus() {
+  const s = await (await fetch('/motion/status')).json();
+  const ts = s.last_trigger_time
+    ? new Date(s.last_trigger_time*1000).toLocaleString()
+    : 'never';
+  const rows = [
+    ['Mode', s.mode_name],
+    ['Last trigger', ts],
+    ['Triggers total', s.triggers_total],
+    ['Current diff', s.sad + ' / threshold ' + s.threshold],
+  ];
+  $('#motionStatusTbl').innerHTML = rows.map(r =>
+    `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+  // Auto-refresh the trigger image while in motion mode.
+  if (s.mode === 2 && s.last_trigger_time > 0) {
+    $('#stream').src = '/motion/last.jpg?t=' + Date.now();
+  }
+}
+setInterval(loadMotionStatus, 5000);
 
 // Camera settings — schema-driven grid.
 const CAM_SCHEMA = [
@@ -254,7 +366,7 @@ $('#wifiReset').onclick = async () => {
 };
 
 // Boot
-loadCam(); loadFlash(); loadStatus();
+loadMode(); loadCam(); loadFlash(); loadStatus(); loadMotion(); loadMotionStatus();
 setInterval(loadStatus, 5000);
 </script>
 </body></html>)HTML";
@@ -269,6 +381,19 @@ static String       s_stream_header;
 static volatile bool s_stream_busy = false;
 
 static size_t stream_filler(uint8_t *buffer, size_t maxLen, size_t index) {
+  // Bail cleanly on mode change so motion_set_mode's camera reconfig can
+  // proceed without racing our held s_stream_fb. We do NOT call fb_return
+  // on s_stream_fb here — motion_set_mode invalidates it via
+  // http_server_invalidate_stream_state() before deiniting the camera, at
+  // which point the pointer is already gone.
+  if (motion_get_mode() != MODE_STREAM) {
+    if (s_stream_fb) {
+      esp_camera_fb_return(s_stream_fb);
+      s_stream_fb = nullptr;
+    }
+    return 0;
+  }
+
   size_t written = 0;
   while (written < maxLen) {
     if (s_stream_phase == 0) {
@@ -311,6 +436,10 @@ static size_t stream_filler(uint8_t *buffer, size_t maxLen, size_t index) {
 }
 
 static void on_stream(AsyncWebServerRequest *request) {
+  if (motion_get_mode() != MODE_STREAM) {
+    request->send(503, "text/plain", "stream disabled in current mode");
+    return;
+  }
   if (s_stream_busy) {
     request->send(503, "text/plain", "another viewer is streaming");
     return;
@@ -358,19 +487,36 @@ static void on_snapshot(AsyncWebServerRequest *request) {
     return;
   }
 
-  if (sd_mounted()) {
-    sd_save_snapshot(fb->buf, fb->len);
+  // In motion mode the camera is configured in GRAYSCALE — encode to JPEG.
+  // In stream/idle mode the camera output is already JPEG; just copy.
+  uint8_t *buf = nullptr;
+  size_t   len = 0;
+  if (fb->format == PIXFORMAT_JPEG) {
+    len = fb->len;
+    buf = (uint8_t *)ps_malloc(len);
+    if (!buf) {
+      esp_camera_fb_return(fb);
+      request->send(500, "text/plain", "out of PSRAM for snapshot");
+      return;
+    }
+    memcpy(buf, fb->buf, len);
+  } else {
+    // GRAYSCALE → encode. frame2jpg() allocates with malloc(); free path
+    // below is unified since malloc/ps_malloc share the same heap-free.
+    if (!frame2jpg(fb, 80, &buf, &len) || !buf || len == 0) {
+      esp_camera_fb_return(fb);
+      request->send(500, "text/plain", "frame2jpg failed");
+      return;
+    }
   }
 
-  size_t len = fb->len;
-  uint8_t *buf = (uint8_t *)ps_malloc(len);
-  if (!buf) {
-    esp_camera_fb_return(fb);
-    request->send(500, "text/plain", "out of PSRAM for snapshot");
-    return;
-  }
-  memcpy(buf, fb->buf, len);
+  // Return fb to the camera pool as soon as buf has the bytes — keeps the
+  // pool from starving the stream/motion task during a slow SD write below.
   esp_camera_fb_return(fb);
+
+  if (sd_mounted()) {
+    sd_save_snapshot(buf, len);
+  }
 
   AsyncWebServerResponse *r = request->beginResponse(200, "image/jpeg", buf, len);
   r->addHeader("Cache-Control", "no-store");
@@ -403,6 +549,7 @@ static void on_status(AsyncWebServerRequest *request) {
   // load. Useful as a relative indicator (e.g. "+15 °C under streaming
   // load") rather than an absolute room-temperature reading.
   doc["cpu_temp_c"]     = temperatureRead();
+  doc["mode"]           = (int)motion_get_mode();
 
   String body; serializeJson(doc, body);
   request->send(200, "application/json", body);
@@ -570,6 +717,114 @@ static void on_hostname_post_body(AsyncWebServerRequest *request, uint8_t *data,
 }
 
 // ---------------------------------------------------------------------------
+// /mode and /motion/*
+// ---------------------------------------------------------------------------
+static const char *mode_name(Mode m) {
+  switch (m) {
+    case MODE_IDLE:   return "idle";
+    case MODE_STREAM: return "stream";
+    case MODE_MOTION: return "motion";
+  }
+  return "?";
+}
+
+static void on_mode_get(AsyncWebServerRequest *request) {
+  Mode m = motion_get_mode();
+  JsonDocument doc;
+  doc["mode"]      = (int)m;
+  doc["mode_name"] = mode_name(m);
+  String body; serializeJson(doc, body);
+  request->send(200, "application/json", body);
+}
+
+static void on_mode_post_body(AsyncWebServerRequest *request, uint8_t *data,
+                              size_t len, size_t index, size_t total) {
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len)) {
+    request->send(400, "text/plain", "bad json");
+    return;
+  }
+  int m = -1;
+  if (doc["mode"].is<int>()) {
+    m = doc["mode"].as<int>();
+  } else if (doc["mode"].is<const char *>()) {
+    String s = doc["mode"].as<const char *>();
+    if      (s == "idle")   m = MODE_IDLE;
+    else if (s == "stream") m = MODE_STREAM;
+    else if (s == "motion") m = MODE_MOTION;
+  }
+  if (m < MODE_IDLE || m > MODE_MOTION) {
+    request->send(400, "text/plain", "mode must be 0/1/2 or idle/stream/motion");
+    return;
+  }
+  if (!motion_set_mode((Mode)m)) {
+    request->send(500, "text/plain", "mode change failed (camera reconfig)");
+    return;
+  }
+  on_mode_get(request);
+}
+
+static void on_motion_config_get(AsyncWebServerRequest *request) {
+  JsonDocument doc;
+  doc["threshold"]  = motion_get_threshold();
+  doc["cooldown_s"] = motion_get_cooldown_s();
+  doc["webhook"]    = motion_get_webhook();
+  String body; serializeJson(doc, body);
+  request->send(200, "application/json", body);
+}
+
+static void on_motion_config_post_body(AsyncWebServerRequest *request, uint8_t *data,
+                                       size_t len, size_t index, size_t total) {
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len)) {
+    request->send(400, "text/plain", "bad json");
+    return;
+  }
+  if (doc["threshold"].is<int>()) {
+    int t = doc["threshold"].as<int>();
+    if (t < 0 || t > 255) {
+      request->send(400, "text/plain", "threshold must be 0..255");
+      return;
+    }
+    motion_set_threshold((uint8_t)t);
+  }
+  if (doc["cooldown_s"].is<int>()) {
+    motion_set_cooldown_s(doc["cooldown_s"].as<int>());
+  }
+  if (doc["webhook"].is<const char *>()) {
+    motion_set_webhook(String(doc["webhook"].as<const char *>()));
+  }
+  on_motion_config_get(request);
+}
+
+static void on_motion_status(AsyncWebServerRequest *request) {
+  JsonDocument doc;
+  Mode m = motion_get_mode();
+  doc["mode"]              = (int)m;
+  doc["mode_name"]         = mode_name(m);
+  doc["sad"]               = motion_last_sad();
+  doc["threshold"]         = motion_get_threshold();
+  doc["last_trigger_time"] = motion_last_trigger_time();
+  doc["triggers_total"]    = motion_trigger_count();
+  String body; serializeJson(doc, body);
+  request->send(200, "application/json", body);
+}
+
+static void on_motion_last_jpg(AsyncWebServerRequest *request) {
+  uint8_t *buf = nullptr;
+  size_t   len = 0;
+  if (!motion_copy_last_jpeg(&buf, &len)) {
+    request->send(404, "text/plain", "no trigger yet");
+    return;
+  }
+  AsyncWebServerResponse *r = request->beginResponse(200, "image/jpeg", buf, len);
+  r->addHeader("Cache-Control", "no-store");
+  r->addHeader("Connection", "close");
+  request->onDisconnect([buf]() { free(buf); });
+  request->send(r);
+}
+
+// ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
 void http_server_begin() {
@@ -598,6 +853,15 @@ void http_server_begin() {
   server.on("/hostname",   HTTP_POST,
             [](AsyncWebServerRequest *r){}, nullptr, on_hostname_post_body);
 
+  server.on("/mode",            HTTP_GET,  on_mode_get);
+  server.on("/mode",            HTTP_POST,
+            [](AsyncWebServerRequest *r){}, nullptr, on_mode_post_body);
+  server.on("/motion/config",   HTTP_GET,  on_motion_config_get);
+  server.on("/motion/config",   HTTP_POST,
+            [](AsyncWebServerRequest *r){}, nullptr, on_motion_config_post_body);
+  server.on("/motion/status",   HTTP_GET,  on_motion_status);
+  server.on("/motion/last.jpg", HTTP_GET,  on_motion_last_jpg);
+
   ota_register(server);
 
   server.onNotFound([](AsyncWebServerRequest *r) {
@@ -606,4 +870,15 @@ void http_server_begin() {
 
   server.begin();
   Serial.printf("[http] listening on port %d\n", HTTP_PORT);
+}
+
+void http_server_invalidate_stream_state() {
+  // The held fb is about to be freed underneath us by camera_deinit. Drop
+  // the pointer without calling fb_return; the underlying buffer goes away
+  // with the camera driver. s_stream_busy stays true — the active stream's
+  // next filler call will hit the mode-mismatch branch above and exit
+  // cleanly (which clears s_stream_busy via the onDisconnect callback).
+  s_stream_fb    = nullptr;
+  s_stream_phase = 0;
+  s_stream_pos   = 0;
 }

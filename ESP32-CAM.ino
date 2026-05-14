@@ -23,12 +23,15 @@
 
 #include <Arduino.h>
 
+#include <Preferences.h>
+
 #include "config.h"
 #include "sd.h"
 #include "camera.h"
 #include "device_name.h"
 #include "net.h"
 #include "http_server.h"
+#include "motion.h"
 
 void setup() {
   Serial.begin(115200);
@@ -39,12 +42,23 @@ void setup() {
   // SD is optional. A missing or unformatted card logs once and we move on.
   sd_mount();
 
-  if (!camera_start()) {
+  // Initial camera config depends on the saved mode in NVS. Default is
+  // STREAM (current behavior); if the device was last in MOTION mode we
+  // boot straight into grayscale config and skip the JPEG-mode warm-up.
+  Preferences mode_prefs;
+  int saved_mode = MODE_STREAM;
+  if (mode_prefs.begin("mode", /*readOnly=*/true)) {
+    saved_mode = mode_prefs.getInt("m", MODE_STREAM);
+    mode_prefs.end();
+  }
+  bool cam_ok = (saved_mode == MODE_MOTION) ? camera_start_motion() : camera_start();
+  if (!cam_ok) {
     Serial.println("[boot] WARNING: camera init failed — /stream and /snapshot will 500.");
     Serial.println("[boot] Verify the FFC is fully seated and the lens isn't covered.");
   }
   // Overlay any user-tuned camera settings persisted to NVS by previous
-  // /camera POSTs. No-op on first boot or after /camera/reset.
+  // /camera POSTs. No-op on first boot or after /camera/reset. Settings
+  // like brightness/contrast apply to both JPEG and GRAYSCALE modes.
   camera_load_and_apply_settings();
 
   flash_led_init();
@@ -60,6 +74,10 @@ void setup() {
   net_begin();
 
   http_server_begin();
+
+  // Motion module: spawns its FreeRTOS task; the task gates on mode and
+  // is a cheap no-op when not in MOTION mode.
+  motion_init();
 
   Serial.println("[boot] setup complete");
 }

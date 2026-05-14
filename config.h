@@ -10,7 +10,7 @@
 #pragma once
 
 // -- Identity ---------------------------------------------------------------
-#define FW_VERSION       "0.2.0"
+#define FW_VERSION       "0.3.0"
 #define MDNS_HOSTNAME    "esp32cam"
 
 // -- HTTP -------------------------------------------------------------------
@@ -63,10 +63,9 @@
 #define FLASH_LED_FREQ    5000   // Hz
 #define FLASH_LED_RES_BITS 8     // 0..255 duty
 
-// -- Onboard red LED (active-low on GPIO33) --------------------------------
-// Useful as a system "alive" indicator; the front-facing flash is too bright
-// for that. Active-LOW: write 0 = on, 1 = off.
-#define STATUS_LED_PIN   33
+// (No software-controllable status LED on this board. The red "Power_Red"
+// LED visible on the PCB is D2 — hardwired across the 3V3 rail through R8.
+// Only physical mitigation: tape, paint, or desolder R8 to dim/kill it.)
 
 // -- SD layout -------------------------------------------------------------
 #define SD_PATH_SNAPSHOTS   "/snapshots"
