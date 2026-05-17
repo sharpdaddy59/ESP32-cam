@@ -24,9 +24,9 @@
 //     re-open the case.
 //
 // Top-of-file `mode` selects what to render:
-//   "lid" / "back" / "assembly" / "exploded"
+//   "lid" / "back" / "assembly" / "exploded" / "hanger"
 
-mode = "assembly";
+mode = "hanger";
 
 // =============================================================
 // FEATURE TOGGLES — flip these to include/exclude optional parts.
@@ -39,6 +39,7 @@ USE_IPEX_CUTOUT    = false;   // slot for external antenna pigtail
 USE_BATTERY_CUTOUT = false;   // slot for JST PH2.0 battery cable
 USE_VENTS          = false;   // vent slot grid on back face
 USE_KEYHOLE        = false;   // wall-mount keyhole on back face
+USE_HANGER_SOCKETS = true;   // 2 sockets on -X face for the hanger pegs
 
 // =============================================================
 // PARAMETERS — tune these to match your board and your printer.
@@ -86,9 +87,9 @@ USB_C_Z_OFFSET       =  3.2;   // centre relative to PCB BOTTOM (positive = abov
 USB_CUTOUT_SLACK     =  0.6;   // extra clearance around the cutout
 
 // ----- microSD slot (bottom long edge, optional) --------------
-SD_SLOT_WIDTH        = 14.0;
+SD_SLOT_WIDTH        = 13.0;
 SD_SLOT_HEIGHT       =  2.0;
-SD_SLOT_X_CENTER     = 13.0;   // PCB-local X of slot centre — MEASURE
+SD_SLOT_X_CENTER     = 12.5;   // PCB-local X of slot centre — MEASURE
 SD_SLOT_Z_OFFSET     =  2.5;   // centre relative to PCB BOTTOM
 SD_CUTOUT_SLACK      =  0.8;
 
@@ -181,6 +182,34 @@ VENT_ROWS            =  2;
 VENT_COLS            =  3;
 VENT_PITCH_X         =  3.0;
 VENT_PITCH_Y         =  2.5;
+
+// ----- Hanger bracket (optional, mode="hanger") ---------------
+// Standalone snap-on bracket that mates with the case's -X short edge
+// (opposite USB-C). Two short pegs project from the hanger's mount face
+// into matching sockets on the back-shell wall (subtracted only when
+// USE_HANGER_SOCKETS is true). The body holds the case at a configurable
+// tilt; the top tab takes a single M4 screw up into a light fixture.
+//
+// Geometry parameter: HANGER_TILT_DEG is the angle between the fixture
+// tab (horizontal when installed) and the case-mount face. Equals the
+// camera lens's angle from vertical when mounted:
+//   0°  = camera looks straight down
+//   45° = camera looks down-and-forward at 45° (default — good for
+//         monitoring a tray below)
+//   90° = camera looks straight forward (horizontal)
+HANGER_TILT_DEG      = 30.0;
+HANGER_BODY_HEIGHT   = 30.0;   // body height in print orientation
+HANGER_PEG_DIAM      =  2.2;   // peg diameter
+HANGER_PEG_LEN       =  3.5;   // peg length
+HANGER_PEG_GAP       = 12.0;   // centre-to-centre between the two pegs.
+                               // Kept narrow so sockets clear the corner
+                               // friction-fit posts (PCB_POST_SHOULDER_DIAM
+                               // at y=MOUNT_HOLE_INSET and y=PCB_WID-INSET).
+HANGER_TAB_W         = 30.0;   // fixture tab width (across)
+HANGER_TAB_D         = 20.0;   // fixture tab depth (front-to-back)
+HANGER_TAB_T         =  4.0;   // fixture tab thickness
+HANGER_SCREW_HOLE    =  4.5;   // M4 clearance for ceiling/fixture screw
+HANGER_SLAB_T        =  4.0;   // case-mount slab thickness
 
 // =============================================================
 // DERIVED CONSTANTS — usually no need to touch
@@ -297,6 +326,24 @@ module vent_grid_negative() {
     for (cy = [0 : VENT_ROWS - 1])
       translate([cx * VENT_PITCH_X, cy * (VENT_SLOT_W + VENT_PITCH_Y), 0])
         cube([VENT_SLOT_LEN, VENT_SLOT_W, WALL + 1]);
+}
+
+// Hanger snap-fit sockets on the back-shell's -X exterior face.
+// Two cylindrical bores penetrating in the +X direction, sized for a
+// light friction fit with the hanger's pegs. Bore depth is slightly
+// more than peg length so the peg seats flush with the case face. The
+// bore goes through the WALL = 2.0 mm wall and protrudes ~2 mm into
+// the cavity below the PCB — empty space (clear of friction-fit posts
+// at corners thanks to the narrow HANGER_PEG_GAP).
+module hanger_socket_negative() {
+  socket_diam  = HANGER_PEG_DIAM + 0.3;   // fit clearance
+  socket_depth = HANGER_PEG_LEN + 0.5;    // a hair deeper than the peg
+  for (dy = [-HANGER_PEG_GAP/2, HANGER_PEG_GAP/2])
+    translate([-WALL - PCB_PERIMETER_GAP - 0.01,
+               PCB_WID/2 + dy,
+               SEAM_Z / 2])
+      rotate([0, 90, 0])
+        cylinder(d=socket_diam, h=socket_depth);
 }
 
 // =============================================================
@@ -435,6 +482,9 @@ module back_shell() {
 
       // Vent slot grid on the back face
       if (USE_VENTS) back_vents();
+
+      // Snap-fit sockets on -X face for the optional hanger bracket
+      if (USE_HANGER_SOCKETS) hanger_socket_negative();
     }
 
     // PCB-retention posts — rise from the cavity floor at z=WALL
@@ -460,6 +510,66 @@ module back_vents() {
 }
 
 // =============================================================
+// HANGER BRACKET — standalone part. Pegs snap into back-shell sockets;
+// fixture tab takes a single M4 screw up into a light fixture.
+// =============================================================
+// Render orientation (what you see in OpenSCAD preview): the fixture
+// tab lies on the XY plane at Z=0 and the body rises in +Z to a
+// tilted case-mount slab. For printing, this same orientation works
+// well — the tab is the natural raft surface, and the slab + body
+// overhangs print self-supported at HANGER_TILT_DEG (45° default is
+// safely within FDM angle limits).
+//
+// Installed orientation (mentally flip 180°): fixture tab is up
+// against the bottom of the fixture, body hangs down, case attaches
+// to the slab. The angle between fixture tab and case-mount face
+// equals HANGER_TILT_DEG and equals the camera's tilt from vertical.
+module hanger() {
+  // Slab dimensions match the case's -X exterior face exactly so the
+  // hanger looks flush against the case when assembled.
+  slab_w = OUTER_Y;          // along Y axis (case Y dimension, 31.8 mm)
+  slab_d = TOTAL_HEIGHT;     // along slab-local X (case Z dimension, 15.1 mm)
+  slab_t = HANGER_SLAB_T;
+
+  body_h = HANGER_BODY_HEIGHT;
+  slab_center_z = body_h - slab_t / 2;
+
+  // Position the pegs on the back-shell half of the slab so they
+  // engage the sockets in the back shell (case Z ≈ SEAM_Z/2). In
+  // slab-local X that's -slab_d/2 + SEAM_Z/2.
+  peg_x_offset = -slab_d/2 + SEAM_Z/2;
+
+  difference() {
+    // Body = convex hull of the flat tab and the tilted slab.
+    // Hull() handles all the wedge geometry automatically; no
+    // trigonometry needed in code, the rotation drives the shape.
+    hull() {
+      translate([-HANGER_TAB_W/2, -HANGER_TAB_D/2, 0])
+        rounded_box(HANGER_TAB_W, HANGER_TAB_D, HANGER_TAB_T, r=CASE_FILLET);
+
+      translate([0, 0, slab_center_z])
+        rotate([0, HANGER_TILT_DEG, 0])
+          translate([-slab_d/2, -slab_w/2, -slab_t/2])
+            rounded_box(slab_d, slab_w, slab_t, r=CASE_FILLET);
+    }
+
+    // M4 clearance hole through the fixture tab. User drives the
+    // screw up from below into the fixture above.
+    translate([0, 0, -0.01])
+      cylinder(d=HANGER_SCREW_HOLE, h=HANGER_TAB_T + 0.02);
+  }
+
+  // Snap-in pegs. Project from the slab's case-mount face (the +Z
+  // face in slab-local coords, which after rotation points away from
+  // the body toward where the case will attach).
+  translate([0, 0, slab_center_z])
+    rotate([0, HANGER_TILT_DEG, 0])
+      for (dy = [-HANGER_PEG_GAP/2, HANGER_PEG_GAP/2])
+        translate([peg_x_offset, dy, slab_t/2 - 0.01])
+          cylinder(d=HANGER_PEG_DIAM, h=HANGER_PEG_LEN + 0.01);
+}
+
+// =============================================================
 // LAYOUT MODES
 // =============================================================
 module assembly_view() {
@@ -480,4 +590,5 @@ if      (mode == "lid")       lid();
 else if (mode == "back")      back_shell();
 else if (mode == "assembly")  assembly_view();
 else if (mode == "exploded")  exploded_view();
+else if (mode == "hanger")    hanger();
 else                          assembly_view();
